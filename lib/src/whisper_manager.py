@@ -7,19 +7,15 @@ import subprocess
 import tempfile
 import os
 import wave
-import json
-import time
-import urllib.request
-import urllib.error
-import mimetypes
-import uuid
 import numpy as np
 from pathlib import Path
 from typing import Optional
 try:
     from .config_manager import ConfigManager
+    from .whisper_server import WhisperServer
 except ImportError:
     from config_manager import ConfigManager
+    from whisper_server import WhisperServer
 
 
 class WhisperManager:
@@ -42,9 +38,7 @@ class WhisperManager:
         self.server_threads = int(self.config.get_setting('server_threads', 0) or 0)
         self.server_enabled = False
 
-        self.server_proc: Optional[subprocess.Popen] = None
-        self._server_port: Optional[int] = None
-        self.server_url: Optional[str] = None
+        self.server: Optional[WhisperServer] = None
         
         # Whisper process state
         self.current_process = None
@@ -77,9 +71,10 @@ class WhisperManager:
 
             self.server_enabled = False
             if self.use_server:
-                if self._ensure_server_running():
+                self.server = WhisperServer(self.whisper_binary, self.model_path, self.server_threads)
+                if self.server.ensure():
                     self.server_enabled = True
-                    print(f"Using managed whisper server at {self.server_url}")
+                    print(f"Using managed whisper server at {self.server.url}")
                 else:
                     print("Managed whisper server unavailable, falling back to CLI per-call mode")
             
@@ -131,9 +126,13 @@ class WhisperManager:
             # Save audio data as WAV file
             self._save_audio_as_wav(audio_data, temp_wav_path, sample_rate)
 
-            if self.use_server:
-                if self._ensure_server_running() and self._check_server_health():
-                    t = self._run_server(temp_wav_path)
+            if self.use_server and self.server:
+                if self.server.ensure() and self.server.healthy():
+                    prompt = self.config.get_setting(
+                        'whisper_prompt',
+                        'Transcribe with proper capitalization, including sentence beginnings, proper nouns, titles, and standard English capitalization rules.'
+                    )
+                    t = self.server.transcribe(temp_wav_path, self.current_model, prompt, self.server_threads)
                     if t:
                         return t.strip()
 
@@ -160,131 +159,6 @@ class WhisperManager:
             wav_file.setframerate(sample_rate)
             wav_file.writeframes(audio_int16.tobytes())
 
-    def _pick_free_port(self) -> int:
-        import socket
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.bind(('127.0.0.1', 0))
-        addr, port = s.getsockname()
-        s.close()
-        return port
-
-    def _start_server_process(self) -> bool:
-        try:
-            port = self._pick_free_port()
-            threads = self.server_threads or (os.cpu_count() or 4)
-            args = [
-                str(self.whisper_binary).replace('main', 'server') if str(self.whisper_binary).endswith('main') else str(self.whisper_binary),
-                '-m', str(self.model_path),
-                '-p', str(port),
-                '-t', str(threads)
-            ]
-            stdout = subprocess.DEVNULL
-            stderr = subprocess.DEVNULL
-            self.server_proc = subprocess.Popen(args, stdout=stdout, stderr=stderr)
-            self._server_port = port
-            self.server_url = f"http://127.0.0.1:{port}"
-            for _ in range(10):
-                if self._check_server_health():
-                    return True
-                time.sleep(0.2)
-            return False
-        except Exception as e:
-            print(f"Failed to start whisper server process: {e}")
-            self.server_proc = None
-            return False
-
-    def _ensure_server_running(self) -> bool:
-        try:
-            if self.server_proc is not None:
-                if self.server_proc.poll() is None:
-                    return True if self._check_server_health() else False
-            if self._start_server_process():
-                return True
-            return False
-        except Exception:
-            return False
-
-    def _stop_server_process(self):
-        try:
-            if self.server_proc is None:
-                return
-            if self.server_proc.poll() is None:
-                self.server_proc.terminate()
-                try:
-                    self.server_proc.wait(timeout=3)
-                except Exception:
-                    self.server_proc.kill()
-            self.server_proc = None
-        except Exception:
-            self.server_proc = None
-
-    def _check_server_health(self) -> bool:
-        try:
-            if not self.server_url:
-                return False
-            url = f"{self.server_url}/health"
-            req = urllib.request.Request(url, method='GET')
-            with urllib.request.urlopen(req, timeout=2) as resp:
-                return 200 <= resp.status < 300
-        except Exception:
-            return False
-
-    def _run_server(self, audio_file_path: str) -> str:
-        try:
-            url = f"{self.server_url}/inference"
-            threads = self.server_threads or (os.cpu_count() or 4)
-            fields = {
-                'language': 'en',
-                'threads': str(threads),
-                'prompt': self.config.get_setting(
-                    'whisper_prompt',
-                    'Transcribe with proper capitalization, including sentence beginnings, proper nouns, titles, and standard English capitalization rules.'
-                ),
-                'model': self.current_model,
-            }
-
-            boundary = '----hyprwhspr-' + uuid.uuid4().hex
-            data_parts = []
-
-            for k, v in fields.items():
-                data_parts.append(f'--{boundary}\r\n'.encode())
-                data_parts.append(f'Content-Disposition: form-data; name="{k}"\r\n\r\n'.encode())
-                data_parts.append(f'{v}\r\n'.encode())
-
-            filename = os.path.basename(audio_file_path)
-            mime = mimetypes.guess_type(filename)[0] or 'audio/wav'
-            data_parts.append(f'--{boundary}\r\n'.encode())
-            data_parts.append(f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'.encode())
-            data_parts.append(f'Content-Type: {mime}\r\n\r\n'.encode())
-            with open(audio_file_path, 'rb') as f:
-                data_parts.append(f.read())
-            data_parts.append(b'\r\n')
-            data_parts.append(f'--{boundary}--\r\n'.encode())
-
-            body = b''.join(data_parts)
-            req = urllib.request.Request(url, data=body, method='POST')
-            req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
-            req.add_header('Content-Length', str(len(body)))
-
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                content_type = resp.headers.get('Content-Type', '')
-                data = resp.read()
-                if 'application/json' in content_type:
-                    try:
-                        payload = json.loads(data.decode('utf-8', errors='ignore'))
-                        return payload.get('text') or payload.get('transcription') or ''
-                    except Exception:
-                        return data.decode('utf-8', errors='ignore')
-                return data.decode('utf-8', errors='ignore')
-        except urllib.error.HTTPError as e:
-            print(f"Whisper server HTTP error: {e.code}")
-            return ""
-        except urllib.error.URLError as e:
-            print(f"Whisper server URL error: {e.reason}")
-            return ""
-        except Exception as e:
-            print(f"Error calling whisper server: {e}")
-            return ""
 
     
     def _run_whisper(self, audio_file_path: str) -> str:

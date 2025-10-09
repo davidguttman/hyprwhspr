@@ -204,9 +204,9 @@ class hyprwhsprApp:
             if self.is_recording:
                 self.audio_capture.stop_recording()
 
-            if hasattr(self, 'whisper_manager') and self.whisper_manager:
+            if hasattr(self, 'whisper_manager') and self.whisper_manager and getattr(self.whisper_manager, 'server', None):
                 try:
-                    self.whisper_manager._stop_server_process()
+                    self.whisper_manager.server.stop()
                 except Exception:
                     pass
 
