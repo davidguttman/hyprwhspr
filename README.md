@@ -377,7 +377,7 @@ Without a GPU, these models will be extremely slow (10-30 seconds per transcript
 
 ### Persistent Whisper Server (keep model in memory)
 
-hyprwhspr can use a persistent whisper.cpp server to keep the model loaded in RAM for faster transcription.
+hyprwhspr can use a persistent whisper.cpp server to keep the model loaded in RAM for faster transcription. This is disabled by default; enable by setting "use_server": true.
 
 Config keys in `~/.config/hyprwhspr/config.json`:
 ```jsonc
