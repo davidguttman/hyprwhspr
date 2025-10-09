@@ -38,30 +38,13 @@ class WhisperManager:
         self.temp_dir = None
 
         # Server configuration
-        self.use_server = bool(self.config.get_setting('use_server', True))
-        self.server_threads = int(self.config.get_setting('server_threads', 4) or 4)
-        self.server_model = self.config.get_setting('server_model', None)
+        self.use_server = bool(self.config.get_setting('use_server', False))
+        self.server_threads = int(self.config.get_setting('server_threads', 0) or 0)
         self.server_enabled = False
 
-        self.server_autostart = bool(self.config.get_setting('server_autostart', True))
         self.server_proc: Optional[subprocess.Popen] = None
         self._server_port: Optional[int] = None
         self.server_url: Optional[str] = None
-
-        from urllib.parse import urlparse, urlunparse
-        try:
-            manual_url = str(self.config.get_setting('server_url', '') or '').rstrip('/')
-            manual_port = self.config.get_setting('server_port', None)
-            if manual_url:
-                parsed = urlparse(manual_url)
-                netloc = parsed.hostname or '127.0.0.1'
-                if manual_port:
-                    netloc = f"{netloc}:{int(manual_port)}"
-                else:
-                    netloc = parsed.netloc or netloc
-                self.server_url = urlunparse((parsed.scheme or 'http', netloc, parsed.path.rstrip('/'), '', '', '')).rstrip('/')
-        except Exception:
-            self.server_url = None
         
         # Whisper process state
         self.current_process = None
@@ -94,18 +77,11 @@ class WhisperManager:
 
             self.server_enabled = False
             if self.use_server:
-                if self.server_autostart:
-                    if self._ensure_server_running():
-                        self.server_enabled = True
-                        print(f"Using managed whisper server at {self.server_url}")
-                    else:
-                        print("Managed whisper server unavailable, falling back to CLI per-call mode")
+                if self._ensure_server_running():
+                    self.server_enabled = True
+                    print(f"Using managed whisper server at {self.server_url}")
                 else:
-                    if self.server_url and self._check_server_health():
-                        self.server_enabled = True
-                        print(f"Using external whisper server at {self.server_url}")
-                    else:
-                        print("Server mode configured but no healthy server found; using CLI fallback")
+                    print("Managed whisper server unavailable, falling back to CLI per-call mode")
             
             self.ready = True
             return True
@@ -156,16 +132,10 @@ class WhisperManager:
             self._save_audio_as_wav(audio_data, temp_wav_path, sample_rate)
 
             if self.use_server:
-                if self.server_autostart:
-                    if self._ensure_server_running() and self._check_server_health():
-                        t = self._run_server(temp_wav_path)
-                        if t:
-                            return t.strip()
-                else:
-                    if self.server_url and self._check_server_health():
-                        t = self._run_server(temp_wav_path)
-                        if t:
-                            return t.strip()
+                if self._ensure_server_running() and self._check_server_health():
+                    t = self._run_server(temp_wav_path)
+                    if t:
+                        return t.strip()
 
             transcription = self._run_whisper(temp_wav_path)
             return transcription.strip() if transcription else ""

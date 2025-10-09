@@ -385,23 +385,12 @@ Config keys in `~/.config/hyprwhspr/config.json`:
 ```jsonc
 {
   "use_server": true,
-  "server_threads": 4,
-  "server_model": null,
-  "server_autostart": true,
-  "server_url": "http://127.0.0.1:17865",
-  "server_port": 17865
+  "server_threads": 4
 }
 ```
 
-Notes:
-- Managed in-process server (default when `use_server` is true):
-  - Uses a random free port at runtime and stores it only in memory; `server_url`/`server_port` are ignored in this mode.
-  - `server_autostart` (default true) will auto-start and auto-restart the child process if it dies.
-  - On any HTTP error or unhealthy state, hyprwhspr automatically falls back to the CLI subprocess inference.
-- External server (optional advanced setup):
-  - You can run a separate whisper.cpp server (e.g., via the provided systemd unit) and point hyprwhspr at it.
-  - In this case, `server_port` overrides any port embedded in `server_url`.
-  - Health check example: `curl -s http://127.0.0.1:<port>/health`.
+- When `use_server` is true, hyprwhspr starts a managed whisper.cpp child on a random internal localhost port (kept in-memory only) and falls back to CLI on any error.
+- `server_threads` controls threads for the child; if omitted or 0, it will auto-tune to available CPU.
 
 ## Troubleshooting
 
