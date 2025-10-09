@@ -385,13 +385,15 @@ Config keys in `~/.config/hyprwhspr/config.json`:
   "use_server": true,
   "server_url": "http://127.0.0.1:17865",
   "server_threads": 4,
-  "server_model": null
+  "server_model": null,
+  "server_port": 17865
 }
 ```
 
 - Unit: `hyprwhspr-whisper.service` (runs whisper.cpp HTTP server per-user)
 - Health check: `curl -s http://127.0.0.1:17865/health`
 - Behavior: If the server is reachable, hyprwhspr uses it; otherwise it falls back to per-call CLI mode automatically.
+- Port configuration: `server_port` overrides any port embedded in `server_url`. The systemd unit defaults to `HYPRWHSPR_SERVER_PORT=17865` and can be overridden via a user override or environment.
 
 ## Troubleshooting
 
