@@ -7,6 +7,12 @@ import subprocess
 import tempfile
 import os
 import wave
+import json
+import time
+import urllib.request
+import urllib.error
+import mimetypes
+import uuid
 import numpy as np
 from pathlib import Path
 from typing import Optional
@@ -30,6 +36,13 @@ class WhisperManager:
         self.whisper_binary = None
         self.model_path = None
         self.temp_dir = None
+
+        # Server configuration
+        self.use_server = bool(self.config.get_setting('use_server', True))
+        self.server_url = str(self.config.get_setting('server_url', 'http://127.0.0.1:8080')).rstrip('/')
+        self.server_threads = int(self.config.get_setting('server_threads', 4) or 4)
+        self.server_model = self.config.get_setting('server_model', None)
+        self.server_enabled = False
         
         # Whisper process state
         self.current_process = None
@@ -59,6 +72,14 @@ class WhisperManager:
             
             print(f"Whisper binary found: {self.whisper_binary}")
             print(f"Using model: {self.current_model} at {self.model_path}")
+
+            self.server_enabled = False
+            if self.use_server:
+                if self._check_server_health():
+                    self.server_enabled = True
+                    print(f"Using persistent whisper server at {self.server_url}")
+                else:
+                    print(f"Whisper server not reachable at {self.server_url}, falling back to CLI per-call mode")
             
             self.ready = True
             return True
@@ -103,22 +124,23 @@ class WhisperManager:
         # Create temporary WAV file
         with tempfile.NamedTemporaryFile(suffix='.wav', delete=False, dir=self.temp_dir) as temp_file:
             temp_wav_path = temp_file.name
-            
+
         try:
             # Save audio data as WAV file
             self._save_audio_as_wav(audio_data, temp_wav_path, sample_rate)
-            
-            # Run whisper.cpp transcription
+
+            if self.server_enabled and self._check_server_health():
+                transcription = self._run_server(temp_wav_path)
+                if transcription:
+                    return transcription.strip()
+
             transcription = self._run_whisper(temp_wav_path)
-            
             return transcription.strip() if transcription else ""
-            
         finally:
-            # Clean up temporary file
             try:
                 os.unlink(temp_wav_path)
             except:
-                pass  # Ignore cleanup errors
+                pass
     
     def _save_audio_as_wav(self, audio_data: np.ndarray, filepath: str, sample_rate: int):
         """Save numpy audio data as a WAV file"""
@@ -134,6 +156,74 @@ class WhisperManager:
             wav_file.setsampwidth(2)  # 16-bit
             wav_file.setframerate(sample_rate)
             wav_file.writeframes(audio_int16.tobytes())
+    def _check_server_health(self) -> bool:
+        try:
+            url = f"{self.server_url}/health"
+            req = urllib.request.Request(url, method='GET')
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                return 200 <= resp.status < 300
+        except Exception:
+            return False
+
+    def _run_server(self, audio_file_path: str) -> str:
+        try:
+            url = f"{self.server_url}/inference"
+            fields = {
+                'language': 'en',
+                'threads': str(self.server_threads),
+                'prompt': self.config.get_setting(
+                    'whisper_prompt',
+                    'Transcribe with proper capitalization, including sentence beginnings, proper nouns, titles, and standard English capitalization rules.'
+                ),
+            }
+            if self.server_model:
+                fields['model'] = self.server_model
+            else:
+                fields['model'] = self.current_model
+
+            boundary = '----hyprwhspr-' + uuid.uuid4().hex
+            data_parts = []
+
+            for k, v in fields.items():
+                data_parts.append(f'--{boundary}\r\n'.encode())
+                data_parts.append(f'Content-Disposition: form-data; name="{k}"\r\n\r\n'.encode())
+                data_parts.append(f'{v}\r\n'.encode())
+
+            filename = os.path.basename(audio_file_path)
+            mime = mimetypes.guess_type(filename)[0] or 'audio/wav'
+            data_parts.append(f'--{boundary}\r\n'.encode())
+            data_parts.append(f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'.encode())
+            data_parts.append(f'Content-Type: {mime}\r\n\r\n'.encode())
+            with open(audio_file_path, 'rb') as f:
+                data_parts.append(f.read())
+            data_parts.append(b'\r\n')
+            data_parts.append(f'--{boundary}--\r\n'.encode())
+
+            body = b''.join(data_parts)
+            req = urllib.request.Request(url, data=body, method='POST')
+            req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
+            req.add_header('Content-Length', str(len(body)))
+
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                content_type = resp.headers.get('Content-Type', '')
+                data = resp.read()
+                if 'application/json' in content_type:
+                    try:
+                        payload = json.loads(data.decode('utf-8', errors='ignore'))
+                        return payload.get('text') or payload.get('transcription') or ''
+                    except Exception:
+                        return data.decode('utf-8', errors='ignore')
+                return data.decode('utf-8', errors='ignore')
+        except urllib.error.HTTPError as e:
+            print(f"Whisper server HTTP error: {e.code}")
+            return ""
+        except urllib.error.URLError as e:
+            print(f"Whisper server URL error: {e.reason}")
+            return ""
+        except Exception as e:
+            print(f"Error calling whisper server: {e}")
+            return ""
+
     
     def _run_whisper(self, audio_file_path: str) -> str:
         """Run whisper.cpp on the given audio file"""

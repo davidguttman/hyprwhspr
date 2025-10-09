@@ -1,0 +1,21 @@
+[Unit]
+Description=hyprwhspr Whisper Server (persistent model)
+After=graphical-session.target pipewire.service
+PartOf=hyprwhspr.service
+
+[Service]
+Type=simple
+# Give the session a moment to settle before starting the server
+ExecStartPre=/bin/sleep 2
+# The server binary path is expected from the user-space build of whisper.cpp
+# Default path used by install scripts:
+# ~/.local/share/hyprwhspr/whisper.cpp/build/bin/whisper-server
+ExecStart=%h/.local/share/hyprwhspr/whisper.cpp/build/bin/whisper-server -m %h/.local/share/hyprwhspr/whisper.cpp/models/ggml-%i.bin -p 8080 -t 4
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+Environment=HYPRWHSPR_ROOT=/usr/lib/hyprwhspr
+
+[Install]
+WantedBy=default.target

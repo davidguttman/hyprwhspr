@@ -375,6 +375,24 @@ Without a GPU, these models will be extremely slow (10-30 seconds per transcript
 - **Process management** - No manual process killing or starting
 - **Service dependencies** - Proper startup/shutdown ordering
 
+### Persistent Whisper Server (keep model in memory)
+
+hyprwhspr can use a persistent whisper.cpp server to keep the model loaded in RAM for faster transcription.
+
+Config keys in `~/.config/hyprwhspr/config.json`:
+```jsonc
+{
+  "use_server": true,
+  "server_url": "http://127.0.0.1:8080",
+  "server_threads": 4,
+  "server_model": null
+}
+```
+
+- Unit: `hyprwhspr-whisper.service` (runs whisper.cpp HTTP server per-user)
+- Health check: `curl -s http://127.0.0.1:8080/health`
+- Behavior: If the server is reachable, hyprwhspr uses it; otherwise it falls back to per-call CLI mode automatically.
+
 ## Troubleshooting
 
 ### Reset Installation
