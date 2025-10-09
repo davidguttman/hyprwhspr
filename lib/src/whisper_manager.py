@@ -139,10 +139,11 @@ class WhisperManager:
             transcription = self._run_whisper(temp_wav_path)
             return transcription.strip() if transcription else ""
         finally:
+            # Clean up temporary file
             try:
                 os.unlink(temp_wav_path)
             except:
-                pass
+                pass  # Ignore cleanup errors
     
     def _save_audio_as_wav(self, audio_data: np.ndarray, filepath: str, sample_rate: int):
         """Save numpy audio data as a WAV file"""
@@ -154,8 +155,8 @@ class WhisperManager:
             audio_int16 = audio_data.astype(np.int16)
         
         with wave.open(filepath, 'wb') as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
+            wav_file.setnchannels(1)  # Mono
+            wav_file.setsampwidth(2)  # 16-bit
             wav_file.setframerate(sample_rate)
             wav_file.writeframes(audio_int16.tobytes())
 

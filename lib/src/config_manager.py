@@ -17,11 +17,11 @@ class ConfigManager:
         self.default_config = {
             'primary_shortcut': 'SUPER+ALT+D',
             'model': 'base',
-            'word_overrides': {},
+            'word_overrides': {},  # Dictionary of word replacements: {"original": "replacement"}
             'whisper_prompt': 'Transcribe with proper capitalization, including sentence beginnings, proper nouns, titles, and standard English capitalization rules.',
-            'clipboard_behavior': False,
-            'clipboard_clear_delay': 5.0,
-            'shift_paste': True,
+            'clipboard_behavior': False,  # Boolean: true = clear clipboard after delay, false = keep (current behavior)
+            'clipboard_clear_delay': 5.0,  # Float: seconds to wait before clearing clipboard (only used if clipboard_behavior is true)
+            'shift_paste': True,  # Boolean: true = Ctrl+Shift+V (works in terminals), false = Ctrl+V (traditional paste)
             'use_server': False,
             'server_threads': 4
         }
