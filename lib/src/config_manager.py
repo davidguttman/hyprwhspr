@@ -23,7 +23,7 @@ class ConfigManager:
             'clipboard_clear_delay': 5.0,
             'shift_paste': True,
             'use_server': True,
-            'server_url': 'http://127.0.0.1:8080',
+            'server_url': 'http://127.0.0.1:17865',
             'server_threads': 4,
             'server_model': None
         }

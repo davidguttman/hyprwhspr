@@ -383,14 +383,14 @@ Config keys in `~/.config/hyprwhspr/config.json`:
 ```jsonc
 {
   "use_server": true,
-  "server_url": "http://127.0.0.1:8080",
+  "server_url": "http://127.0.0.1:17865",
   "server_threads": 4,
   "server_model": null
 }
 ```
 
 - Unit: `hyprwhspr-whisper.service` (runs whisper.cpp HTTP server per-user)
-- Health check: `curl -s http://127.0.0.1:8080/health`
+- Health check: `curl -s http://127.0.0.1:17865/health`
 - Behavior: If the server is reachable, hyprwhspr uses it; otherwise it falls back to per-call CLI mode automatically.
 
 ## Troubleshooting
