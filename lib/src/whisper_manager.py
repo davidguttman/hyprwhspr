@@ -39,22 +39,29 @@ class WhisperManager:
 
         # Server configuration
         self.use_server = bool(self.config.get_setting('use_server', True))
-        from urllib.parse import urlparse, urlunparse
-        self.server_url = str(self.config.get_setting('server_url', 'http://127.0.0.1:17865')).rstrip('/')
         self.server_threads = int(self.config.get_setting('server_threads', 4) or 4)
         self.server_model = self.config.get_setting('server_model', None)
-        self.server_port = int(self.config.get_setting('server_port', 17865) or 17865)
-        try:
-            parsed = urlparse(self.server_url)
-            netloc = parsed.hostname or '127.0.0.1'
-            if self.server_port:
-                netloc = f"{netloc}:{self.server_port}"
-            else:
-                netloc = parsed.netloc or netloc
-            self.server_url = urlunparse((parsed.scheme or 'http', netloc, parsed.path.rstrip('/'), '', '', '')).rstrip('/')
-        except Exception:
-            self.server_url = f"http://127.0.0.1:{self.server_port}"
         self.server_enabled = False
+
+        self.server_autostart = bool(self.config.get_setting('server_autostart', True))
+        self.server_proc: Optional[subprocess.Popen] = None
+        self._server_port: Optional[int] = None
+        self.server_url: Optional[str] = None
+
+        from urllib.parse import urlparse, urlunparse
+        try:
+            manual_url = str(self.config.get_setting('server_url', '') or '').rstrip('/')
+            manual_port = self.config.get_setting('server_port', None)
+            if manual_url:
+                parsed = urlparse(manual_url)
+                netloc = parsed.hostname or '127.0.0.1'
+                if manual_port:
+                    netloc = f"{netloc}:{int(manual_port)}"
+                else:
+                    netloc = parsed.netloc or netloc
+                self.server_url = urlunparse((parsed.scheme or 'http', netloc, parsed.path.rstrip('/'), '', '', '')).rstrip('/')
+        except Exception:
+            self.server_url = None
         
         # Whisper process state
         self.current_process = None
@@ -87,11 +94,18 @@ class WhisperManager:
 
             self.server_enabled = False
             if self.use_server:
-                if self._check_server_health():
-                    self.server_enabled = True
-                    print(f"Using persistent whisper server at {self.server_url}")
+                if self.server_autostart:
+                    if self._ensure_server_running():
+                        self.server_enabled = True
+                        print(f"Using managed whisper server at {self.server_url}")
+                    else:
+                        print("Managed whisper server unavailable, falling back to CLI per-call mode")
                 else:
-                    print(f"Whisper server not reachable at {self.server_url}, falling back to CLI per-call mode")
+                    if self.server_url and self._check_server_health():
+                        self.server_enabled = True
+                        print(f"Using external whisper server at {self.server_url}")
+                    else:
+                        print("Server mode configured but no healthy server found; using CLI fallback")
             
             self.ready = True
             return True
@@ -141,10 +155,17 @@ class WhisperManager:
             # Save audio data as WAV file
             self._save_audio_as_wav(audio_data, temp_wav_path, sample_rate)
 
-            if self.server_enabled and self._check_server_health():
-                transcription = self._run_server(temp_wav_path)
-                if transcription:
-                    return transcription.strip()
+            if self.use_server:
+                if self.server_autostart:
+                    if self._ensure_server_running() and self._check_server_health():
+                        t = self._run_server(temp_wav_path)
+                        if t:
+                            return t.strip()
+                else:
+                    if self.server_url and self._check_server_health():
+                        t = self._run_server(temp_wav_path)
+                        if t:
+                            return t.strip()
 
             transcription = self._run_whisper(temp_wav_path)
             return transcription.strip() if transcription else ""
@@ -164,12 +185,72 @@ class WhisperManager:
             audio_int16 = audio_data.astype(np.int16)
         
         with wave.open(filepath, 'wb') as wav_file:
-            wav_file.setnchannels(1)  # Mono
-            wav_file.setsampwidth(2)  # 16-bit
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
             wav_file.setframerate(sample_rate)
             wav_file.writeframes(audio_int16.tobytes())
+
+    def _pick_free_port(self) -> int:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(('127.0.0.1', 0))
+        addr, port = s.getsockname()
+        s.close()
+        return port
+
+    def _start_server_process(self) -> bool:
+        try:
+            port = self._pick_free_port()
+            args = [
+                str(self.whisper_binary).replace('main', 'server') if str(self.whisper_binary).endswith('main') else str(self.whisper_binary),
+                '-m', str(self.model_path),
+                '-p', str(port),
+                '-t', str(self.server_threads)
+            ]
+            stdout = subprocess.DEVNULL
+            stderr = subprocess.DEVNULL
+            self.server_proc = subprocess.Popen(args, stdout=stdout, stderr=stderr)
+            self._server_port = port
+            self.server_url = f"http://127.0.0.1:{port}"
+            for _ in range(10):
+                if self._check_server_health():
+                    return True
+                time.sleep(0.2)
+            return False
+        except Exception as e:
+            print(f"Failed to start whisper server process: {e}")
+            self.server_proc = None
+            return False
+
+    def _ensure_server_running(self) -> bool:
+        try:
+            if self.server_proc is not None:
+                if self.server_proc.poll() is None:
+                    return True if self._check_server_health() else False
+            if self._start_server_process():
+                return True
+            return False
+        except Exception:
+            return False
+
+    def _stop_server_process(self):
+        try:
+            if self.server_proc is None:
+                return
+            if self.server_proc.poll() is None:
+                self.server_proc.terminate()
+                try:
+                    self.server_proc.wait(timeout=3)
+                except Exception:
+                    self.server_proc.kill()
+            self.server_proc = None
+        except Exception:
+            self.server_proc = None
+
     def _check_server_health(self) -> bool:
         try:
+            if not self.server_url:
+                return False
             url = f"{self.server_url}/health"
             req = urllib.request.Request(url, method='GET')
             with urllib.request.urlopen(req, timeout=2) as resp:
@@ -240,13 +321,10 @@ class WhisperManager:
     def _run_whisper(self, audio_file_path: str) -> str:
         """Run whisper.cpp on the given audio file"""
         try:
-            # Get whisper prompt from config or use default
             whisper_prompt = self.config.get_setting(
                 'whisper_prompt', 
                 'Transcribe with proper capitalization, including sentence beginnings, proper nouns, titles, and standard English capitalization rules.'
             )
-            
-            # Construct whisper.cpp command
             cmd = [
                 str(self.whisper_binary),
                 '-m', str(self.model_path),
@@ -256,100 +334,48 @@ class WhisperManager:
                 '--threads', '4',
                 '--prompt', whisper_prompt
             ]
-            
-            # Run the command
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=30  # 30 second timeout
-            )
-            
-            if result.returncode == 0:
-                # Try to read the output txt file
-                txt_file = audio_file_path + '.txt'
-                if os.path.exists(txt_file):
-                    with open(txt_file, 'r') as f:
-                        transcription = f.read().strip()
-                    # Clean up the txt file
-                    os.unlink(txt_file)
-                    return transcription
-                else:
-                    # Fall back to stdout if no txt file
-                    return result.stdout.strip()
-            else:
-                print(f"Whisper command failed with return code {result.returncode}")
-                print(f"stderr: {result.stderr}")
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            if proc.returncode != 0:
+                print(f"Whisper process failed with code {proc.returncode}")
+                if proc.stderr:
+                    print(proc.stderr.strip())
                 return ""
-                
-        except subprocess.TimeoutExpired:
-            print("Whisper transcription timed out")
+            output_text = proc.stdout.strip()
+            if output_text:
+                return output_text
+            txt_path = Path(audio_file_path).with_suffix('.txt')
+            if txt_path.exists():
+                try:
+                    with open(txt_path, 'r') as f:
+                        return f.read().strip()
+                finally:
+                    try:
+                        os.unlink(txt_path)
+                    except:
+                        pass
             return ""
         except Exception as e:
-            print(f"Error running whisper: {e}")
+            print(f"Error running whisper.cpp: {e}")
             return ""
-    
-    def set_model(self, model_name: str) -> bool:
-        """
-        Change the whisper model
-        
-        Args:
-            model_name: Name of the model (e.g., 'base', 'small')
-            
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            # Check if the new model exists
-            new_model_path = self.config.get_whisper_model_path(model_name)
-            
-            if not new_model_path.exists():
-                print(f"ERROR: Model {model_name} not found at {new_model_path}")
-                return False
-            
-            # Update current model
-            self.current_model = model_name
-            self.model_path = new_model_path
-            
-            # Update config
-            self.config.set_setting('model', model_name)
-            
-            print(f"Switched to model: {model_name}")
-            return True
-            
-        except Exception as e:
-            print(f"ERROR: Failed to set model {model_name}: {e}")
-            return False
+
+    def set_model(self, model_name: str):
+        """Set the current Whisper model"""
+        self.current_model = model_name
+        if self.ready:
+            self.model_path = self.config.get_whisper_model_path(model_name)
     
     def get_current_model(self) -> str:
-        """Get the current model name"""
+        """Get the current Whisper model name"""
         return self.current_model
     
-    def get_available_models(self) -> list:
-        """Get list of available whisper models"""
-        models_dir = self.config.get_whisper_model_path('').parent
-        available_models = []
+    def get_available_models(self):
+        """List available Whisper models"""
+        models_dir = self.config.get_models_directory()
+        if not models_dir.exists():
+            return []
         
-        # Look for the supported model files
-        supported_models = ['tiny', 'base', 'small', 'medium', 'large']
-        
-        for model in supported_models:
-            # Check for both English-only and multilingual versions
-            model_files = [
-                models_dir / f"ggml-{model}.en.bin",  # English-only
-                models_dir / f"ggml-{model}.bin"      # Multilingual
-            ]
-            
-            for model_file in model_files:
-                if model_file.exists():
-                    # Add model name with suffix if it's English-only
-                    if model_file.name.endswith('.en.bin'):
-                        model_name = f"{model}.en"
-                    else:
-                        model_name = model
-                    
-                    if model_name not in available_models:
-                        available_models.append(model_name)
-                    break  # Don't add both versions of same model
-        
-        return sorted(available_models)
+        models = []
+        for model_file in models_dir.glob("ggml-*.bin"):
+            name = model_file.name.replace("ggml-", "").replace(".bin", "")
+            models.append(name)
+        return models

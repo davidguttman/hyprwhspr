@@ -198,19 +198,20 @@ class hyprwhsprApp:
     def _cleanup(self):
         """Clean up resources when shutting down"""
         try:
-            # Stop global shortcuts
             if self.global_shortcuts:
                 self.global_shortcuts.stop()
 
-            # Stop audio capture
             if self.is_recording:
                 self.audio_capture.stop_recording()
 
-            # Save configuration
+            if hasattr(self, 'whisper_manager') and self.whisper_manager:
+                try:
+                    self.whisper_manager._stop_server_process()
+                except Exception:
+                    pass
+
             self.config.save_config()
-            
             print("✅ Cleanup completed")
-            
         except Exception as e:
             print(f"⚠️ Error during cleanup: {e}")
 

@@ -377,23 +377,31 @@ Without a GPU, these models will be extremely slow (10-30 seconds per transcript
 
 ### Persistent Whisper Server (keep model in memory)
 
-hyprwhspr can use a persistent whisper.cpp server to keep the model loaded in RAM for faster transcription. This is disabled by default; enable by setting "use_server": true.
+hyprwhspr can keep the Whisper model loaded in RAM for faster transcription by using a persistent whisper.cpp server. This feature is disabled by default; enable it by setting `"use_server": true`.
+
+When enabled, hyprwhspr starts a managed whisper.cpp child server bound to a random localhost port known only to the app. It health-checks the server and automatically falls back to the per-call CLI path on any error, so dictation continues to work.
 
 Config keys in `~/.config/hyprwhspr/config.json`:
 ```jsonc
 {
   "use_server": true,
-  "server_url": "http://127.0.0.1:17865",
   "server_threads": 4,
   "server_model": null,
+  "server_autostart": true,
+  "server_url": "http://127.0.0.1:17865",
   "server_port": 17865
 }
 ```
 
-- Unit: `hyprwhspr-whisper.service` (runs whisper.cpp HTTP server per-user)
-- Health check: `curl -s http://127.0.0.1:17865/health`
-- Behavior: If the server is reachable, hyprwhspr uses it; otherwise it falls back to per-call CLI mode automatically.
-- Port configuration: `server_port` overrides any port embedded in `server_url`. The systemd unit defaults to `HYPRWHSPR_SERVER_PORT=17865` and can be overridden via a user override or environment.
+Notes:
+- Managed in-process server (default when `use_server` is true):
+  - Uses a random free port at runtime and stores it only in memory; `server_url`/`server_port` are ignored in this mode.
+  - `server_autostart` (default true) will auto-start and auto-restart the child process if it dies.
+  - On any HTTP error or unhealthy state, hyprwhspr automatically falls back to the CLI subprocess inference.
+- External server (optional advanced setup):
+  - You can run a separate whisper.cpp server (e.g., via the provided systemd unit) and point hyprwhspr at it.
+  - In this case, `server_port` overrides any port embedded in `server_url`.
+  - Health check example: `curl -s http://127.0.0.1:<port>/health`.
 
 ## Troubleshooting
 

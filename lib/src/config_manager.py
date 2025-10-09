@@ -26,7 +26,8 @@ class ConfigManager:
             'server_url': 'http://127.0.0.1:17865',
             'server_threads': 4,
             'server_model': None,
-            'server_port': 17865
+            'server_port': 17865,
+            'server_autostart': True
         }
         
         # Set up config directory and file path
