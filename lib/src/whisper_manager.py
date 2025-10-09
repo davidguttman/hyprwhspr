@@ -171,11 +171,12 @@ class WhisperManager:
     def _start_server_process(self) -> bool:
         try:
             port = self._pick_free_port()
+            threads = self.server_threads or (os.cpu_count() or 4)
             args = [
                 str(self.whisper_binary).replace('main', 'server') if str(self.whisper_binary).endswith('main') else str(self.whisper_binary),
                 '-m', str(self.model_path),
                 '-p', str(port),
-                '-t', str(self.server_threads)
+                '-t', str(threads)
             ]
             stdout = subprocess.DEVNULL
             stderr = subprocess.DEVNULL
@@ -231,18 +232,16 @@ class WhisperManager:
     def _run_server(self, audio_file_path: str) -> str:
         try:
             url = f"{self.server_url}/inference"
+            threads = self.server_threads or (os.cpu_count() or 4)
             fields = {
                 'language': 'en',
-                'threads': str(self.server_threads),
+                'threads': str(threads),
                 'prompt': self.config.get_setting(
                     'whisper_prompt',
                     'Transcribe with proper capitalization, including sentence beginnings, proper nouns, titles, and standard English capitalization rules.'
                 ),
+                'model': self.current_model,
             }
-            if self.server_model:
-                fields['model'] = self.server_model
-            else:
-                fields['model'] = self.current_model
 
             boundary = '----hyprwhspr-' + uuid.uuid4().hex
             data_parts = []
@@ -340,7 +339,7 @@ class WhisperManager:
     
     def get_available_models(self):
         """List available Whisper models"""
-        models_dir = self.config.get_models_directory()
+        models_dir = self.config.get_whisper_model_path('').parent
         if not models_dir.exists():
             return []
         
