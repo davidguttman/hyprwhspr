@@ -39,9 +39,21 @@ class WhisperManager:
 
         # Server configuration
         self.use_server = bool(self.config.get_setting('use_server', True))
-        self.server_url = str(self.config.get_setting('server_url', 'http://127.0.0.1:8080')).rstrip('/')
+        from urllib.parse import urlparse, urlunparse
+        self.server_url = str(self.config.get_setting('server_url', 'http://127.0.0.1:17865')).rstrip('/')
         self.server_threads = int(self.config.get_setting('server_threads', 4) or 4)
         self.server_model = self.config.get_setting('server_model', None)
+        self.server_port = int(self.config.get_setting('server_port', 17865) or 17865)
+        try:
+            parsed = urlparse(self.server_url)
+            netloc = parsed.hostname or '127.0.0.1'
+            if self.server_port:
+                netloc = f"{netloc}:{self.server_port}"
+            else:
+                netloc = parsed.netloc or netloc
+            self.server_url = urlunparse((parsed.scheme or 'http', netloc, parsed.path.rstrip('/'), '', '', '')).rstrip('/')
+        except Exception:
+            self.server_url = f"http://127.0.0.1:{self.server_port}"
         self.server_enabled = False
         
         # Whisper process state
