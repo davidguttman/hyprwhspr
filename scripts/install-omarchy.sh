@@ -319,7 +319,16 @@ setup_python_environment() {
   
   # Install dependencies from system files
   source "$VENV_DIR/bin/activate"
-  pip install --upgrade pip wheel
+  local pip_bin="$VENV_DIR/bin/pip"
+  "$pip_bin" install --upgrade pip wheel
+
+  local enable_rocm=false
+  if { command -v rocm-smi >/dev/null 2>&1 || [ -d /opt/rocm ]; } && command -v hipcc >/dev/null 2>&1; then
+    enable_rocm=true
+    log_info "ROCm toolchain detected; enabling GGML_HIP=ON for pywhispercpp build"
+  elif { command -v rocm-smi >/dev/null 2>&1 || [ -d /opt/rocm ]; }; then
+    log_warning "ROCm detected but hipcc compiler missing; pywhispercpp build stays CPU-only"
+  fi
   
   # Check if dependencies are actually installed in the venv
   local deps_installed=false
@@ -329,9 +338,36 @@ setup_python_environment() {
   
   if [ "$cur_req_hash" != "$stored_req_hash" ] || [ -z "$stored_req_hash" ] || [ "$deps_installed" = "false" ]; then
     log_info "Installing Python dependencies (requirements.txt changed or deps missing)"
-    pip install -r "$INSTALL_DIR/requirements.txt"
+    if [ "$enable_rocm" = true ]; then
+      local uv_bin
+      uv_bin=$(ensure_uv_available "$pip_bin") || { log_error "Failed to install uv"; return 1; }
+
+      local tmp_req
+      tmp_req=$(mktemp)
+      grep -vi '^pywhispercpp' "$INSTALL_DIR/requirements.txt" > "$tmp_req"
+      if [ -s "$tmp_req" ]; then
+        if ! "$uv_bin" pip install --python "$VENV_DIR/bin/python" --no-cache -r "$tmp_req"; then
+          log_error "uv failed to install base Python dependencies"
+          rm -f "$tmp_req"
+          return 1
+        fi
+      fi
+      rm -f "$tmp_req"
+
+      # Remove any pre-existing pywhispercpp wheel before rebuilding
+      "$uv_bin" pip uninstall --python "$VENV_DIR/bin/python" -y pywhispercpp >/dev/null 2>&1 || true
+
+      if ! install_pywhispercpp_rocm "$uv_bin"; then
+        log_error "Failed to install pywhispercpp with ROCm support via uv"
+        return 1
+      fi
+    else
+      "$pip_bin" install -r "$INSTALL_DIR/requirements.txt"
+    fi
     set_state "requirements_hash" "$cur_req_hash"
-    log_success "Python dependencies installed"
+    if [ "$enable_rocm" != true ]; then
+      log_success "Python dependencies installed"
+    fi
   else
     log_info "Python dependencies up to date (skipping pip install)"
   fi
@@ -400,6 +436,71 @@ setup_amd_support() {
   else
     log_info "No AMD GPU detected"
   fi
+}
+
+ensure_uv_available() {
+  local pip_bin="$1"
+  local uv_bin=""
+
+  if command -v uv >/dev/null 2>&1; then
+    uv_bin="$(command -v uv)"
+  elif [ -x "$VENV_DIR/bin/uv" ]; then
+    uv_bin="$VENV_DIR/bin/uv"
+  else
+    if [ -z "$pip_bin" ]; then
+      log_error "pip binary not provided to install uv"
+      return 1
+    fi
+    log_info "Installing uv inside venv"
+    "$pip_bin" install uv >/dev/null 2>&1 || "$pip_bin" install uv || return 1
+    if [ -x "$VENV_DIR/bin/uv" ]; then
+      uv_bin="$VENV_DIR/bin/uv"
+    elif command -v uv >/dev/null 2>&1; then
+      uv_bin="$(command -v uv)"
+    fi
+  fi
+
+  if [ -z "$uv_bin" ]; then
+    log_error "uv command not found after installation"
+    return 1
+  fi
+
+  echo "$uv_bin"
+  return 0
+}
+
+install_pywhispercpp_rocm() {
+  local uv_bin="$1"
+  local src_dir="$USER_BASE/pywhispercpp-src"
+
+  if [ -z "$uv_bin" ]; then
+    log_error "uv command not provided for pywhispercpp ROCm install"
+    return 1
+  fi
+
+  # Clone or update pywhispercpp sources (with submodules)
+  if [ ! -d "$src_dir/.git" ]; then
+    log_info "Cloning pywhispercpp sources → $src_dir"
+    git clone --recurse-submodules https://github.com/Absadiki/pywhispercpp.git "$src_dir" || return 1
+  else
+    log_info "Updating pywhispercpp sources in $src_dir"
+    (cd "$src_dir" && git fetch --tags && git pull --ff-only && git submodule update --init --recursive) || log_warning "Could not update pywhispercpp repository"
+  fi
+
+  # Use uv to build/install from source with HIP support
+  log_info "Building pywhispercpp with ROCm (ggml HIP) via uv"
+  if GGML_HIP=ON "$uv_bin" pip install \
+      --python "$VENV_DIR/bin/python" \
+      -e "$src_dir" \
+      --no-cache \
+      --force-reinstall \
+      -v; then
+    log_success "pywhispercpp installed with ROCm acceleration via uv"
+    return 0
+  fi
+
+  log_error "uv pip install of pywhispercpp failed"
+  return 1
 }
 
 # ----------------------- whisper.cpp build ---------------------
