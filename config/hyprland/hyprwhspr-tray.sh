@@ -58,14 +58,24 @@ model_exists() {
     local model_path
     model_path=$(grep -oE '"model"\s*:\s*"[^"]+"' "$cfg" 2>/dev/null | cut -d\" -f4)
     [[ -n "$model_path" ]] || return 0  # use defaults; skip
-    
+
     # If it's a short name like "base.en", resolve to full path
     if [[ "$model_path" != /* ]]; then
-        # Always use user data directory for models
-        model_path="${XDG_DATA_HOME:-$HOME/.local/share}/hyprwhspr/whisper.cpp/models/ggml-${model_path}.bin"
+        local model_filename="ggml-${model_path}.bin"
+        local search_paths=(
+            "${XDG_DATA_HOME:-$HOME/.local/share}/hyprwhspr/whisper.cpp/models/$model_filename"
+            "${XDG_DATA_HOME:-$HOME/.local/share}/pywhispercpp/models/$model_filename"
+        )
+
+        for candidate in "${search_paths[@]}"; do
+            if [[ -f "$candidate" ]]; then
+                return 0
+            fi
+        done
+        return 1
     fi
-    
-    [[ -f "$model_path" ]] || return 1
+
+    [[ -f "$model_path" ]]
 }
 
 # Microphone detection functions (clean, fast, reliable)
