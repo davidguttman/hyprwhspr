@@ -23,13 +23,14 @@ INSTALL_DIR="/usr/lib/hyprwhspr"  # Always read-only system files
 SERVICE_NAME="hyprwhspr.service"
 YDOTOOL_UNIT="ydotool.service"
 
-# Always use user space for runtime data (consistent across all installations)
-USER_BASE="${XDG_DATA_HOME:-$HOME/.local/share}/hyprwhspr"
-VENV_DIR="$USER_BASE/venv"                    # Python virtual environment
-PYWHISPERCPP_MODELS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/pywhispercpp/models" # pywhispercpp model dir
-USER_BIN_DIR="$HOME/.local/bin"               # User's local bin directory
-STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/hyprwhspr"
-STATE_FILE="$STATE_DIR/install-state.json"    # Persistent installation state
+# These will be set properly after detecting the actual user (see below)
+# Placeholders that will be overwritten after ACTUAL_USER detection
+USER_BASE=""
+VENV_DIR=""
+PYWHISPERCPP_MODELS_DIR=""
+USER_BIN_DIR=""
+STATE_DIR=""
+STATE_FILE=""
 
 # ----------------------- Detect actual user --------------------
 if [ "$EUID" -eq 0 ]; then
@@ -62,6 +63,14 @@ if [ -z "$USER_HOME" ] || [ ! -d "$USER_HOME" ]; then
   exit 1
 fi
 USER_CONFIG_DIR="$USER_HOME/.config/hyprwhspr"
+
+# Now set user-specific paths using the detected USER_HOME
+USER_BASE="$USER_HOME/.local/share/hyprwhspr"
+VENV_DIR="$USER_BASE/venv"
+PYWHISPERCPP_MODELS_DIR="$USER_HOME/.local/share/pywhispercpp/models"
+USER_BIN_DIR="$USER_HOME/.local/bin"
+STATE_DIR="$USER_HOME/.local/state/hyprwhspr"
+STATE_FILE="$STATE_DIR/install-state.json"
 
 # ----------------------- Command line options ------------------
 CHECK_MODE=false
@@ -307,17 +316,27 @@ setup_python_environment() {
   local enable_cuda=false
   local enable_rocm=false
   
-  # Detect GPU toolchains
+  # Detect GPU toolchains - test if GPUs actually work, not just if tools exist
   if command -v nvidia-smi >/dev/null 2>&1 && command -v nvcc >/dev/null 2>&1; then
-    enable_cuda=true
-    log_info "CUDA toolchain detected; enabling GGML_CUDA=ON for pywhispercpp build"
+    # Check if nvidia-smi actually detects a working GPU
+    if nvidia-smi -L >/dev/null 2>&1; then
+      enable_cuda=true
+      log_info "CUDA toolchain detected with working NVIDIA GPU; enabling GGML_CUDA=ON for pywhispercpp build"
+    else
+      log_warning "NVIDIA tools found but no working GPU detected; skipping CUDA"
+    fi
   elif command -v nvidia-smi >/dev/null 2>&1; then
-    log_warning "NVIDIA GPU detected but nvcc compiler missing; pywhispercpp build stays CPU-only"
+    log_warning "NVIDIA GPU tools detected but nvcc compiler missing; pywhispercpp build stays CPU-only"
   fi
-  
+
   if { command -v rocm-smi >/dev/null 2>&1 || [ -d /opt/rocm ]; } && command -v hipcc >/dev/null 2>&1; then
-    enable_rocm=true
-    log_info "ROCm toolchain detected; enabling GGML_HIP=ON for pywhispercpp build"
+    # Check if rocm-smi actually detects a working GPU
+    if rocm-smi --showproductname >/dev/null 2>&1; then
+      enable_rocm=true
+      log_info "ROCm toolchain detected with working AMD GPU; enabling GGML_HIP=ON for pywhispercpp build"
+    else
+      log_warning "ROCm tools found but no working GPU detected; skipping HIP"
+    fi
   elif { command -v rocm-smi >/dev/null 2>&1 || [ -d /opt/rocm ]; }; then
     log_warning "ROCm detected but hipcc compiler missing; pywhispercpp build stays CPU-only"
   fi
@@ -430,7 +449,7 @@ install_pywhispercpp_rocm() {
 
   # Use pip to build/install from source with HIP support
   log_info "Building pywhispercpp with ROCm (ggml HIP) via pip"
-  if GGML_HIP=ON "$pip_bin" install \
+  if GGML_HIP=ON GGML_CUDA=OFF CC=/opt/rocm/llvm/bin/clang CXX=/opt/rocm/llvm/bin/clang++ "$pip_bin" install \
       -e "$src_dir" \
       --no-cache-dir \
       --force-reinstall \

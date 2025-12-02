@@ -392,16 +392,30 @@ class WhisperManager:
         sys.stderr.flush()
 
         try:
+            start_time = time.time()
+
             # Get language setting from config (None = auto-detect)
             language = self.config.get_setting('language', None)
 
             # Transcribe with language parameter if specified
+            transcribe_start = time.time()
             if language:
                 segments = self._pywhisper_model.transcribe(audio_data, language=language)
             else:
                 segments = self._pywhisper_model.transcribe(audio_data)
+            transcribe_ms = (time.time() - transcribe_start) * 1000
 
-            return ' '.join(seg.text for seg in segments).strip()
+            # Join segments
+            join_start = time.time()
+            result = ' '.join(seg.text for seg in segments).strip()
+            join_ms = (time.time() - join_start) * 1000
+
+            total_ms = (time.time() - start_time) * 1000
+            audio_duration = len(audio_data) / sample_rate
+
+            print(f'[TIMING] Transcribe: {transcribe_ms:.0f}ms | Join: {join_ms:.0f}ms | Total: {total_ms:.0f}ms | Audio: {audio_duration:.2f}s', flush=True)
+
+            return result
         except Exception as e:
             print(f"ERROR: pywhispercpp transcription failed: {e}")
             return ""
